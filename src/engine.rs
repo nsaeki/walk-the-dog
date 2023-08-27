@@ -93,11 +93,26 @@ impl GameLoop {
     }
 }
 
+#[derive(Clone, Copy)]
+pub struct Point {
+    pub x: i16,
+    pub y: i16,
+}
+
 pub struct Rect {
     pub x: f32,
     pub y: f32,
     pub width: f32,
     pub height: f32,
+}
+
+impl Rect {
+    pub fn intersects(&self, rect: &Rect) -> bool {
+        self.x < (rect.x + rect.width)
+            && self.x + self.width > rect.x
+            && self.y < (rect.y + rect.height)
+            && self.y + self.height > rect.y
+    }
 }
 
 pub struct Renderer {
@@ -128,28 +143,44 @@ impl Renderer {
                 destination.height.into(),
             );
     }
+
+    pub fn draw_rect(&self, rect: &Rect) {
+        // self.context.set_stroke_style("red".into());
+        self.context.stroke_rect(
+            rect.x.into(),
+            rect.y.into(),
+            rect.width.into(),
+            rect.height.into(),
+        );
+    }
+
+    pub fn draw_entire_image(&self, image: &HtmlImageElement, position: &Point) {
+        self.context
+            .draw_image_with_html_image_element(image, position.x.into(), position.y.into())
+            .expect("Drawing is throwing exceptions! Unrecoverable error.");
+    }
 }
 
 enum KeyPress {
-    KeyUp(web_sys::KeyboardEvent),
-    KeyDown(web_sys::KeyboardEvent),
+    KeyUp(KeyboardEvent),
+    KeyDown(KeyboardEvent),
 }
 
 fn prepare_input() -> Result<UnboundedReceiver<KeyPress>> {
     let (keydown_sender, keyevent_receiver) = unbounded();
     let keydown_sender = Rc::new(RefCell::new(keydown_sender));
     let keyup_sender = Rc::clone(&keydown_sender);
-    let onkeydown = browser::closure_wrap(Box::new(move |keycode: web_sys::KeyboardEvent| {
+    let onkeydown = browser::closure_wrap(Box::new(move |keycode: KeyboardEvent| {
         keydown_sender
             .borrow_mut()
             .start_send(KeyPress::KeyDown(keycode));
-    }) as Box<dyn FnMut(web_sys::KeyboardEvent)>);
+    }) as Box<dyn FnMut(KeyboardEvent)>);
 
-    let onkeyup = browser::closure_wrap(Box::new(move |keycode: web_sys::KeyboardEvent| {
+    let onkeyup = browser::closure_wrap(Box::new(move |keycode: KeyboardEvent| {
         keyup_sender
             .borrow_mut()
             .start_send(KeyPress::KeyUp(keycode));
-    }) as Box<dyn FnMut(web_sys::KeyboardEvent)>);
+    }) as Box<dyn FnMut(KeyboardEvent)>);
 
     browser::window()?.set_onkeydown(Some(onkeydown.as_ref().unchecked_ref()));
     browser::window()?.set_onkeyup(Some(onkeyup.as_ref().unchecked_ref()));
@@ -172,7 +203,7 @@ fn process_input(state: &mut KeyState, keyevent_receiver: &mut UnboundedReceiver
 }
 
 pub struct KeyState {
-    pressed_keys: HashMap<String, web_sys::KeyboardEvent>,
+    pressed_keys: HashMap<String, KeyboardEvent>,
 }
 
 impl KeyState {
@@ -186,7 +217,7 @@ impl KeyState {
         self.pressed_keys.contains_key(code)
     }
 
-    fn set_pressed(&mut self, code: &str, event: web_sys::KeyboardEvent) {
+    fn set_pressed(&mut self, code: &str, event: KeyboardEvent) {
         self.pressed_keys.insert(code.into(), event);
     }
 
@@ -195,8 +226,32 @@ impl KeyState {
     }
 }
 
-#[derive(Clone, Copy)]
-pub struct Point {
-    pub x: i16,
-    pub y: i16,
+pub struct Image {
+    element: HtmlImageElement,
+    position: Point,
+    bounding_box: Rect,
+}
+
+impl Image {
+    pub fn new(element: HtmlImageElement, position: Point) -> Self {
+        let bounding_box = Rect {
+            x: position.x.into(),
+            y: position.y.into(),
+            width: element.width() as f32,
+            height: element.height() as f32,
+        };
+        Self {
+            element,
+            position,
+            bounding_box,
+        }
+    }
+
+    pub fn draw(&self, renderer: &Renderer) {
+        renderer.draw_entire_image(&self.element, &self.position);
+    }
+
+    pub fn bounding_box(&self) -> &Rect {
+        &self.bounding_box
+    }
 }
