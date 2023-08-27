@@ -2,19 +2,14 @@ use crate::browser;
 use crate::browser::LoopClosure;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use futures::channel::mpsc::unbounded;
-use futures::channel::mpsc::UnboundedReceiver;
-use futures::channel::oneshot::channel;
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::rc::Rc;
-use std::sync::Mutex;
-use wasm_bindgen::closure::Closure;
-use wasm_bindgen::JsCast;
-use wasm_bindgen::JsValue;
-use web_sys::CanvasRenderingContext2d;
-use web_sys::HtmlImageElement;
-use web_sys::KeyboardEvent;
+use futures::channel::{
+    mpsc::{unbounded, UnboundedReceiver},
+    oneshot::channel,
+};
+use serde::Deserialize;
+use std::{cell::RefCell, collections::HashMap, rc::Rc, sync::Mutex};
+use wasm_bindgen::{closure::Closure, JsCast, JsValue};
+use web_sys::{CanvasRenderingContext2d, HtmlImageElement, KeyboardEvent};
 
 pub async fn load_image(source: &str) -> Result<HtmlImageElement> {
     let image = browser::new_image()?;
@@ -93,25 +88,97 @@ impl GameLoop {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct Point {
     pub x: i16,
     pub y: i16,
 }
 
+#[derive(Default)]
 pub struct Rect {
-    pub x: f32,
-    pub y: f32,
-    pub width: f32,
-    pub height: f32,
+    pub position: Point,
+    pub width: i16,
+    pub height: i16,
 }
 
 impl Rect {
+    pub const fn new(position: Point, width: i16, height: i16) -> Self {
+        Rect {
+            position,
+            width,
+            height,
+        }
+    }
+
+    pub const fn new_from_x_y(x: i16, y: i16, width: i16, height: i16) -> Self {
+        Rect::new(Point { x, y }, width, height)
+    }
+
+    pub fn x(&self) -> i16 {
+        self.position.x
+    }
+
+    pub fn y(&self) -> i16 {
+        self.position.y
+    }
+
     pub fn intersects(&self, rect: &Rect) -> bool {
-        self.x < (rect.x + rect.width)
-            && self.x + self.width > rect.x
-            && self.y < (rect.y + rect.height)
-            && self.y + self.height > rect.y
+        self.x() < (rect.x() + rect.width)
+            && self.x() + self.width > rect.x()
+            && self.y() < (rect.y() + rect.height)
+            && self.y() + self.height > rect.y()
+    }
+
+    pub fn right(&self) -> i16 {
+        self.x() + self.width
+    }
+
+    pub fn bottom(&self) -> i16 {
+        self.y() + self.height
+    }
+
+    pub fn set_x(&mut self, x: i16) {
+        self.position.x = x;
+    }
+}
+
+pub struct Image {
+    element: HtmlImageElement,
+    bounding_box: Rect,
+}
+
+impl Image {
+    pub fn new(element: HtmlImageElement, position: Point) -> Self {
+        let bounding_box = Rect::new(
+            position,
+            // FIXME unsafe cast from u32 to i16
+            element.width() as i16,
+            element.height() as i16,
+        );
+        Self {
+            element,
+            bounding_box,
+        }
+    }
+
+    pub fn draw(&self, renderer: &Renderer) {
+        renderer.draw_entire_image(&self.element, &self.bounding_box.position);
+    }
+
+    pub fn bounding_box(&self) -> &Rect {
+        &self.bounding_box
+    }
+
+    pub fn move_horizontally(&mut self, distance: i16) {
+        self.bounding_box.set_x(self.bounding_box.x() + distance);
+    }
+
+    pub fn right(&self) -> i16 {
+        self.bounding_box.right()
+    }
+
+    pub fn set_x(&mut self, x: i16) {
+        self.bounding_box.set_x(x);
     }
 }
 
@@ -122,8 +189,8 @@ pub struct Renderer {
 impl Renderer {
     pub fn clear(&self, rect: &Rect) {
         self.context.clear_rect(
-            rect.x.into(),
-            rect.y.into(),
+            rect.x().into(),
+            rect.y().into(),
             rect.width.into(),
             rect.height.into(),
         );
@@ -133,12 +200,12 @@ impl Renderer {
         self.context
             .draw_image_with_html_image_element_and_sw_and_sh_and_dx_and_dy_and_dw_and_dh(
                 &image,
-                frame.x.into(),
-                frame.y.into(),
+                frame.x().into(),
+                frame.y().into(),
                 frame.width.into(),
                 frame.height.into(),
-                destination.x.into(),
-                destination.y.into(),
+                destination.x().into(),
+                destination.y().into(),
                 destination.width.into(),
                 destination.height.into(),
             );
@@ -147,8 +214,8 @@ impl Renderer {
     pub fn draw_rect(&self, rect: &Rect) {
         // self.context.set_stroke_style("red".into());
         self.context.stroke_rect(
-            rect.x.into(),
-            rect.y.into(),
+            rect.x().into(),
+            rect.y().into(),
             rect.width.into(),
             rect.height.into(),
         );
@@ -226,32 +293,40 @@ impl KeyState {
     }
 }
 
-pub struct Image {
-    element: HtmlImageElement,
-    position: Point,
-    bounding_box: Rect,
+#[derive(Deserialize, Clone)]
+pub struct SheetRect {
+    pub x: i16,
+    pub y: i16,
+    pub w: i16,
+    pub h: i16,
 }
 
-impl Image {
-    pub fn new(element: HtmlImageElement, position: Point) -> Self {
-        let bounding_box = Rect {
-            x: position.x.into(),
-            y: position.y.into(),
-            width: element.width() as f32,
-            height: element.height() as f32,
-        };
-        Self {
-            element,
-            position,
-            bounding_box,
-        }
+#[derive(Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Cell {
+    pub frame: SheetRect,
+    pub sprite_source_size: SheetRect,
+}
+#[derive(Deserialize, Clone)]
+pub struct Sheet {
+    frames: HashMap<String, Cell>,
+}
+
+pub struct SpriteSheet {
+    sheet: Sheet,
+    image: HtmlImageElement,
+}
+
+impl SpriteSheet {
+    pub fn new(sheet: Sheet, image: HtmlImageElement) -> Self {
+        SpriteSheet { sheet, image }
     }
 
-    pub fn draw(&self, renderer: &Renderer) {
-        renderer.draw_entire_image(&self.element, &self.position);
+    pub fn cell(&self, name: &str) -> Option<&Cell> {
+        self.sheet.frames.get(name)
     }
 
-    pub fn bounding_box(&self) -> &Rect {
-        &self.bounding_box
+    pub fn draw(&self, renderer: &Renderer, source: &Rect, destination: &Rect) {
+        renderer.draw_image(&self.image, source, destination);
     }
 }
